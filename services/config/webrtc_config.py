@@ -5,6 +5,59 @@ import streamlit as st
 from streamlit_webrtc import RTCConfiguration
 
 
+def _search_dict_case_insensitive(d, *target_keys):
+    """Search a dictionary or AttrDict case-insensitively, including 1 level of nested dicts."""
+    target_lower = {k.lower() for k in target_keys}
+
+    # 1. Check top-level
+    if hasattr(d, "items"):
+        for k, v in d.items():
+            if k.lower() in target_lower and v:
+                return str(v).strip()
+
+    # 2. Check 1 level of nested dictionaries
+    if hasattr(d, "items"):
+        for _, sub in d.items():
+            if hasattr(sub, "items"):
+                for sk, sv in sub.items():
+                    if sk.lower() in target_lower and sv:
+                        return str(sv).strip()
+
+    return ""
+
+
+def _get_secret_val(*target_keys):
+    """Retrieve secret from st.secrets or os.environ using case-insensitive key search."""
+    # Check st.secrets
+    try:
+        if hasattr(st, "secrets") and st.secrets is not None:
+            val = _search_dict_case_insensitive(st.secrets, *target_keys)
+            if val:
+                return val
+    except Exception:
+        pass
+
+    # Check os.environ
+    for k, v in os.environ.items():
+        for target in target_keys:
+            if k.lower() == target.lower() and v:
+                return str(v).strip()
+
+    return ""
+
+
+def _get_all_secret_keys():
+    """List all detected top-level secret keys without leaking values."""
+    keys = []
+    try:
+        if hasattr(st, "secrets") and st.secrets is not None:
+            for k in st.secrets.keys():
+                keys.append(str(k))
+    except Exception:
+        pass
+    return keys
+
+
 @st.cache_data(ttl=1800)
 def _fetch_metered_ice_servers(domain: str, api_key: str):
     domain = domain.replace("https://", "").replace("http://", "").strip().rstrip("/")
@@ -12,27 +65,43 @@ def _fetch_metered_ice_servers(domain: str, api_key: str):
         domain = f"{domain}.metered.live"
     url = f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
     req = urllib.request.Request(url, headers={"User-Agent": "StreamlitApp/1.0"})
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=7) as resp:
         if resp.status == 200:
             return json.loads(resp.read().decode())
     return None
 
 
+def _expand_turn_urls(raw_turn):
+    """Given a TURN URL or hostname, return full set of UDP and TCP transports on ports 80 and 443."""
+    host = raw_turn.strip()
+    # Strip protocol prefix if present
+    for prefix in ["turn:", "turns:"]:
+        if host.startswith(prefix):
+            host = host[len(prefix) :]
+    # Strip port/params
+    if "?" in host:
+        host = host.split("?")[0]
+    if ":" in host:
+        host = host.split(":")[0]
+
+    if not host:
+        return [raw_turn]
+
+    return [
+        f"turn:{host}:80",
+        f"turn:{host}:80?transport=tcp",
+        f"turn:{host}:443",
+        f"turn:{host}:443?transport=tcp",
+    ]
+
+
 def get_webrtc_config():
     """
-    Builds and returns RTCConfiguration for streamlit-webrtc.
-    Checks for TURN credentials in Streamlit secrets or environment variables.
-    Supports:
-      1. Twilio:
-         - TWILIO_ACCOUNT_SID
-         - TWILIO_AUTH_TOKEN
-      2. Metered.ca API Key:
-         - METERED_DOMAIN, METERED_API_KEY
-         - or [metered] domain, api_key
-      3. Metered.ca / Generic Static TURN:
-         - [webrtc] turn_url, turn_username, turn_password
-         - or TURN_URL / TURN_URLS, TURN_USERNAME, TURN_PASSWORD
-    Falls back to Google public STUN servers.
+    Builds and returns (RTCConfiguration, status_dict).
+    Checks for TURN credentials from:
+      1. Twilio: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+      2. Metered API: METERED_DOMAIN (or domain), METERED_API_KEY (or api_key)
+      3. Metered / Generic static: turn_url, turn_username, turn_password / credential
     """
     ice_servers = [
         {
@@ -46,97 +115,63 @@ def get_webrtc_config():
         }
     ]
 
-    has_turn = False
+    detected_keys = _get_all_secret_keys()
+    status = {
+        "has_turn": False,
+        "provider": "stun_only",
+        "details": "Google STUN only (No TURN active)",
+        "secrets_found": detected_keys,
+        "error": None,
+    }
 
-    # 1. Check Twilio credentials in Streamlit secrets or environment
-    twilio_sid = ""
-    twilio_token = ""
-    try:
-        if hasattr(st, "secrets"):
-            twilio_sid = st.secrets.get("TWILIO_ACCOUNT_SID", "")
-            twilio_token = st.secrets.get("TWILIO_AUTH_TOKEN", "")
-    except Exception:
-        pass
-
-    if not twilio_sid:
-        twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    if not twilio_token:
-        twilio_token = os.getenv("TWILIO_AUTH_TOKEN", "")
-
+    # 1. Twilio
+    twilio_sid = _get_secret_val("TWILIO_ACCOUNT_SID", "twilio_sid")
+    twilio_token = _get_secret_val("TWILIO_AUTH_TOKEN", "twilio_token")
     if twilio_sid and twilio_token:
         try:
             from streamlit_webrtc import get_twilio_ice_servers
 
             twilio_servers = get_twilio_ice_servers(twilio_sid, twilio_token)
-            return RTCConfiguration({"iceServers": twilio_servers}), True
-        except Exception:
-            pass
+            status["has_turn"] = True
+            status["provider"] = "Twilio"
+            status["details"] = "Twilio Network Traversal TURN"
+            return RTCConfiguration({"iceServers": twilio_servers}), status
+        except Exception as e:
+            status["error"] = f"Twilio error: {e}"
 
-    # 2. Check Metered.ca API Key & Domain
-    metered_domain = ""
-    metered_key = ""
-    try:
-        if hasattr(st, "secrets"):
-            if "metered" in st.secrets:
-                metered_domain = st.secrets["metered"].get("domain", "")
-                metered_key = st.secrets["metered"].get("api_key", "")
-            if not metered_domain:
-                metered_domain = st.secrets.get("METERED_DOMAIN", "")
-                metered_key = st.secrets.get("METERED_API_KEY", "")
-    except Exception:
-        pass
-
-    if not metered_domain:
-        metered_domain = os.getenv("METERED_DOMAIN", "")
-        metered_key = os.getenv("METERED_API_KEY", "")
-
+    # 2. Metered.ca API Key & Domain
+    metered_domain = _get_secret_val("METERED_DOMAIN", "domain", "metered_domain")
+    metered_key = _get_secret_val("METERED_API_KEY", "api_key", "metered_api_key")
     if metered_domain and metered_key:
         try:
             servers = _fetch_metered_ice_servers(metered_domain, metered_key)
             if servers and isinstance(servers, list):
-                return RTCConfiguration({"iceServers": servers}), True
-        except Exception:
-            pass
+                status["has_turn"] = True
+                status["provider"] = "Metered.ca API"
+                status["details"] = f"Metered.ca Relay ({metered_domain})"
+                return RTCConfiguration({"iceServers": servers}), status
+        except Exception as e:
+            status["error"] = f"Metered API error: {e}"
 
-    # 3. Check Generic / Metered.ca static TURN credentials
-    turn_url = ""
-    turn_user = ""
-    turn_pass = ""
-    try:
-        if hasattr(st, "secrets"):
-            if "webrtc" in st.secrets:
-                webrtc_sec = st.secrets["webrtc"]
-                turn_url = webrtc_sec.get("turn_url", "")
-                turn_user = webrtc_sec.get("turn_username", "")
-                turn_pass = webrtc_sec.get("turn_password", "")
-
-            if not turn_url:
-                turn_url = st.secrets.get("TURN_URL") or st.secrets.get("TURN_URLS", "")
-                turn_user = st.secrets.get("TURN_USERNAME", "")
-                turn_pass = st.secrets.get("TURN_PASSWORD") or st.secrets.get(
-                    "TURN_CREDENTIAL", ""
-                )
-    except Exception:
-        pass
-
-    if not turn_url:
-        turn_url = os.getenv("TURN_URL", "")
-        turn_user = os.getenv("TURN_USERNAME", "")
-        turn_pass = os.getenv("TURN_PASSWORD", "")
+    # 3. Static TURN credentials (Metered, Xirsys, or custom)
+    turn_url = _get_secret_val("turn_url", "TURN_URL", "turn_urls", "urls")
+    turn_user = _get_secret_val("turn_username", "TURN_USERNAME", "username", "user")
+    turn_pass = _get_secret_val(
+        "turn_password", "TURN_PASSWORD", "turn_credential", "credential", "password"
+    )
 
     if turn_url and turn_user and turn_pass:
-        if isinstance(turn_url, str):
-            urls = [u.strip() for u in turn_url.split(",") if u.strip()]
-        else:
-            urls = list(turn_url)
-
+        expanded_urls = _expand_turn_urls(turn_url)
         ice_servers.append(
             {
-                "urls": urls,
+                "urls": expanded_urls,
                 "username": turn_user,
                 "credential": turn_pass,
             }
         )
-        has_turn = True
+        status["has_turn"] = True
+        status["provider"] = "Static TURN"
+        status["details"] = f"Relay ({turn_url}) with TCP/UDP fallback"
+        return RTCConfiguration({"iceServers": ice_servers}), status
 
-    return RTCConfiguration({"iceServers": ice_servers}), has_turn
+    return RTCConfiguration({"iceServers": ice_servers}), status

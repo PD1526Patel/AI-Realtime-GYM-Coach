@@ -198,7 +198,42 @@ def main():
             unsafe_allow_html=True,
         )
     else:
-        rtc_config, has_turn = get_webrtc_config()
+        rtc_config, status = get_webrtc_config()
+
+        if status["has_turn"]:
+            st.success(f"🟢 **WebRTC Relay Active:** {status['details']}")
+        else:
+            if status.get("error"):
+                st.error(f"❌ **TURN Error:** {status['error']}")
+
+            with st.expander(
+                "ℹ️ Camera stuck or taking long to connect on Cloud? (Click here)",
+                expanded=True,
+            ):
+                st.markdown(
+                    f"""
+                    WebRTC in cloud containers requires a **TURN relay server** to bypass cloud firewalls.
+
+                    **Secrets currently detected by Streamlit Cloud:** `{status['secrets_found'] or 'None'}`
+
+                    **How to add your Metered credentials (Choose A or B):**
+
+                    **Option A (Domain & API Key):**
+                    ```toml
+                    METERED_DOMAIN = "yourdomain.metered.live"
+                    METERED_API_KEY = "your_metered_api_key"
+                    ```
+
+                    **Option B (TURN Server Details):**
+                    ```toml
+                    turn_url = "turn:global.relay.metered.ca:80"
+                    turn_username = "your_username"
+                    turn_password = "your_password"
+                    ```
+
+                    *After saving in Streamlit Cloud Secrets, click **Manage app** ➔ **Reboot app** if it does not refresh automatically.*
+                    """
+                )
 
         context = webrtc_streamer(
             key="exercise-analysis",
@@ -208,26 +243,6 @@ def main():
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
-
-        if not has_turn and (context.state is None or not context.state.playing):
-            with st.expander("ℹ️ Camera stuck or taking long to connect on Cloud? (Click here)"):
-                st.markdown(
-                    """
-                    WebRTC in cloud containers requires a **TURN relay server** to bypass cloud firewalls.
-
-                    **To connect instantly (Free, 1-2 min setup):**
-                    1. Create a free account at [Metered.ca](https://www.metered.ca/tools/openrelay) (50GB free/mo) or [Twilio](https://www.twilio.com).
-                    2. In your Streamlit Cloud app settings, open **Secrets**.
-                    3. Add your credentials:
-                    ```toml
-                    [webrtc]
-                    turn_url = "turn:global.relay.metered.ca:80"
-                    turn_username = "YOUR_METERED_USERNAME"
-                    turn_password = "YOUR_METERED_PASSWORD"
-                    ```
-                    *(Or add `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`)*
-                    """
-                )
 
         sync_metrics_update(context)
 
