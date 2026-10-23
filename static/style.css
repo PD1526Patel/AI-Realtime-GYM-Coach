@@ -16,7 +16,7 @@
 ========================================================= */
 
 .block-container,
-.block-container * {
+.block-container *:not([data-testid="stIconMaterial"]):not([data-testid="stExpanderToggleIcon"]):not(.material-symbols-rounded):not(.material-symbols-outlined):not([class*="material"]) {
   font-family: 'AdobeClean', sans-serif !important;
 }
 
