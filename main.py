@@ -16,6 +16,7 @@ from services.persistence.exercise_repository import get_users_exercises
 from services.coaching.tts import TextToSpeech
 from services.coaching.llm import LLMCoach
 from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio
+from services.config.webrtc_config import get_webrtc_config
 
 
 def main():
@@ -147,7 +148,7 @@ def main():
                 st.metric("Body Alignment", f"{st.session_state.body_alignment}")
                 st.metric("Hip Position", f"{st.session_state.hip_status}")
 
-            elif exercise == "Biceps Curls (Dumbbell)":
+            elif exercise in ("Biceps Curls (Dumbbell)", "Bicep Curls (Dumbbell)"):
                 st.subheader("Curl Metrics")
                 st.metric("Elbow Angle", f"{st.session_state.elbow_angle}°")
                 st.metric("Shoulder Stability", f"{st.session_state.shoulder_status}")
@@ -197,16 +198,36 @@ def main():
             unsafe_allow_html=True,
         )
     else:
+        rtc_config, has_turn = get_webrtc_config()
+
         context = webrtc_streamer(
             key="exercise-analysis",
             mode=WebRtcMode.SENDRECV,
             video_processor_factory=VideoProcessorClass,
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
+            rtc_configuration=rtc_config,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
+
+        if not has_turn and (context.state is None or not context.state.playing):
+            with st.expander("ℹ️ Camera stuck or taking long to connect on Cloud? (Click here)"):
+                st.markdown(
+                    """
+                    WebRTC in cloud containers requires a **TURN relay server** to bypass cloud firewalls.
+
+                    **To connect instantly (Free, 1-2 min setup):**
+                    1. Create a free account at [Metered.ca](https://www.metered.ca/tools/openrelay) (50GB free/mo) or [Twilio](https://www.twilio.com).
+                    2. In your Streamlit Cloud app settings, open **Secrets**.
+                    3. Add your credentials:
+                    ```toml
+                    [webrtc]
+                    turn_url = "turn:global.relay.metered.ca:80"
+                    turn_username = "YOUR_METERED_USERNAME"
+                    turn_password = "YOUR_METERED_PASSWORD"
+                    ```
+                    *(Or add `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`)*
+                    """
+                )
 
         sync_metrics_update(context)
 

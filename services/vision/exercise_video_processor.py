@@ -126,7 +126,7 @@ class VideoProcessorClass(VideoProcessorBase):
             self._draw_squat_overlays(img, metrics)
         elif ex_type == "Push-ups":
             self._draw_pushup_overlays(img, metrics)
-        elif ex_type == "Biceps Curls (Dumbbell)":
+        elif ex_type in ("Biceps Curls (Dumbbell)", "Bicep Curls (Dumbbell)"):
             self._draw_curl_overlays(img, metrics)
         elif ex_type == "Shoulder Press":
             self._draw_press_overlays(img, metrics)

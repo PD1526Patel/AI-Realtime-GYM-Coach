@@ -37,7 +37,7 @@ class VoicePipeline:
                     "The user's hips are too high — lower them to form a straight line."
                 )
 
-        elif exercise == "Biceps Curls (Dumbbell)":
+        elif exercise in ("Biceps Curls (Dumbbell)", "Bicep Curls (Dumbbell)"):
             swing = metrics.get("swing_status", "")
             shoulder = metrics.get("shoulder_status", "")
 
