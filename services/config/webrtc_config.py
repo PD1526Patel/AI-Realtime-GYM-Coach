@@ -172,6 +172,7 @@ def get_webrtc_config():
         status["has_turn"] = True
         status["provider"] = "Static TURN"
         status["details"] = f"Relay ({turn_url}) with TCP/UDP fallback"
+        status["error"] = None
         return RTCConfiguration({"iceServers": ice_servers}), status
 
     return RTCConfiguration({"iceServers": ice_servers}), status
