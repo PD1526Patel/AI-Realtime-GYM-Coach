@@ -1,6 +1,21 @@
 import os
+import json
+import urllib.request
 import streamlit as st
 from streamlit_webrtc import RTCConfiguration
+
+
+@st.cache_data(ttl=1800)
+def _fetch_metered_ice_servers(domain: str, api_key: str):
+    domain = domain.replace("https://", "").replace("http://", "").strip().rstrip("/")
+    if not domain.endswith(".metered.live") and not domain.endswith(".metered.ca"):
+        domain = f"{domain}.metered.live"
+    url = f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
+    req = urllib.request.Request(url, headers={"User-Agent": "StreamlitApp/1.0"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        if resp.status == 200:
+            return json.loads(resp.read().decode())
+    return None
 
 
 def get_webrtc_config():
@@ -11,7 +26,10 @@ def get_webrtc_config():
       1. Twilio:
          - TWILIO_ACCOUNT_SID
          - TWILIO_AUTH_TOKEN
-      2. Metered.ca / Generic TURN:
+      2. Metered.ca API Key:
+         - METERED_DOMAIN, METERED_API_KEY
+         - or [metered] domain, api_key
+      3. Metered.ca / Generic Static TURN:
          - [webrtc] turn_url, turn_username, turn_password
          - or TURN_URL / TURN_URLS, TURN_USERNAME, TURN_PASSWORD
     Falls back to Google public STUN servers.
@@ -54,7 +72,33 @@ def get_webrtc_config():
         except Exception:
             pass
 
-    # 2. Check Generic / Metered.ca TURN credentials
+    # 2. Check Metered.ca API Key & Domain
+    metered_domain = ""
+    metered_key = ""
+    try:
+        if hasattr(st, "secrets"):
+            if "metered" in st.secrets:
+                metered_domain = st.secrets["metered"].get("domain", "")
+                metered_key = st.secrets["metered"].get("api_key", "")
+            if not metered_domain:
+                metered_domain = st.secrets.get("METERED_DOMAIN", "")
+                metered_key = st.secrets.get("METERED_API_KEY", "")
+    except Exception:
+        pass
+
+    if not metered_domain:
+        metered_domain = os.getenv("METERED_DOMAIN", "")
+        metered_key = os.getenv("METERED_API_KEY", "")
+
+    if metered_domain and metered_key:
+        try:
+            servers = _fetch_metered_ice_servers(metered_domain, metered_key)
+            if servers and isinstance(servers, list):
+                return RTCConfiguration({"iceServers": servers}), True
+        except Exception:
+            pass
+
+    # 3. Check Generic / Metered.ca static TURN credentials
     turn_url = ""
     turn_user = ""
     turn_pass = ""
